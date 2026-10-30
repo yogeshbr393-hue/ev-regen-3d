@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BMW i4 regenerative braking simulator</title>
+<style>
+:root{--bg:#ffffff;--fg:#1f2937;--muted:#6b7280;--card:#f3f4f6;--bd:#d1d5db;--on:#2f5fd0;--onfg:#ffffff;--red:#d85a30;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111418;--fg:#e5e7eb;--muted:#9ca3af;--card:#1c2128;--bd:#374151;--on:#6d93f0;--onfg:#0b1020;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#111418;--fg:#e5e7eb;--muted:#9ca3af;--card:#1c2128;--bd:#374151;--on:#6d93f0;--onfg:#0b1020;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.4;-webkit-user-select:none;user-select:none}
+main{max-width:780px;margin:0 auto;padding:12px 14px 24px}
+h1{font-size:18px;font-weight:500;margin:4px 0 2px}
+p.sub{margin:0 0 8px;font-size:13px;color:var(--muted)}
+#stage{width:100%;height:44vh;min-height:260px;max-height:480px;border:1px solid var(--bd);border-radius:12px;background:var(--card);touch-action:none;overflow:hidden}
+#stage canvas{display:block;width:100%;height:100%}
+#msg{margin:8px 0;font-size:13px;color:var(--muted);min-height:20px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}
+.tiles div{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:7px 10px;font-size:12px;color:var(--muted)}
+.tiles b{display:block;font-size:16px;font-weight:500;color:var(--fg);margin-top:1px}
+.pedals{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+.pedal{height:72px;font-size:16px;font-weight:500;touch-action:none;border:1px solid var(--bd);border-radius:12px;color:var(--fg);background:linear-gradient(to right,var(--fc) var(--p,0%),var(--card) var(--p,0%));cursor:pointer;font-family:inherit}
+#pb{--fc:var(--red)}#pa{--fc:var(--on)}
+.pedal small{display:block;font-size:11px;font-weight:400;color:var(--muted)}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0;font-size:13px;color:var(--muted)}
+.row button{font:inherit;font-size:13px;padding:7px 11px;border-radius:8px;border:1px solid var(--bd);background:var(--card);color:var(--fg);cursor:pointer}
+.row button[aria-pressed="true"]{background:var(--on);color:var(--onfg);border-color:var(--on)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px;font-size:12px;color:var(--muted)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+</style>
+</head>
+<body>
+<main>
+<h1>BMW i4 regenerative braking simulator</h1>
+<p class="sub">Hold Accelerate or Brake (keys: W or Up, S or Down or Space). Drag the scene to rotate, pinch or scroll to zoom.</p>
+<div id="stage"></div>
+<div id="msg">Stationary. Hold Accelerate to drive.</div>
+<div class="tiles">
+<div>Speed<b id="tv">0 km/h</b></div>
+<div>Motor power<b id="tp">0 kW</b></div>
+<div>Supercapacitor<b id="ts">225 V</b></div>
+<div>Battery current<b id="ti">0 A</b></div>
+<div>Battery charge<b id="tc">80.00 %</b></div>
+<div>Energy recovered<b id="tr">0 Wh</b></div>
+<div>Regen captured<b id="tk">–</b></div>
+<div>Friction share<b id="tf">–</b></div>
+</div>
+<div class="pedals">
+<button class="pedal" id="pb">Brake<small>hold</small></button>
+<button class="pedal" id="pa">Accelerate<small>hold</small></button>
+</div>
+<div class="row"><span>Storage:</span>
+<button data-store="hyb" aria-pressed="true">Hybrid (battery + SC)</button>
+<button data-store="bat" aria-pressed="false">Battery only</button></div>
+<div class="row"><span>Battery charge limit:</span>
+<button data-lim="33.5" aria-pressed="true">0.5C</button>
+<button data-lim="67" aria-pressed="false">1C</button>
+<button id="xr" aria-pressed="true">See-through body</button>
+<button id="sd" aria-pressed="true">Sound</button>
+<button id="rs">Reset</button></div>
+<div class="legend">
+<span><i style="background:#1d9e75"></i>Li-ion battery</span>
+<span><i style="background:#7f77dd"></i>Supercapacitor</span>
+<span><i style="background:#ef9f27"></i>DC-DC converter and regen flow</span>
+<span><i style="background:#888780"></i>Motor + inverter</span>
+</div>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+var $=function(i){return document.getElementById(i);};
+var el=$('stage');
+var scene=new THREE.Scene();
+var camera=new THREE.PerspectiveCamera(40,1,0.1,100);
+var renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+el.appendChild(renderer.domElement);
+scene.add(new THREE.AmbientLight(0xffffff,0.75));
+var dl=new THREE.DirectionalLight(0xffffff,0.8);dl.position.set(4,8,5);scene.add(dl);
+var car=new THREE.Group();scene.add(car);
+function mat(c,o){return new THREE.MeshStandardMaterial({color:c,roughness:0.5,metalness:0.1,transparent:true,opacity:o===undefined?1:o});}
+var s=new THREE.Shape();
+s.moveTo(-2.2,0.3);s.lineTo(2.2,0.3);s.lineTo(2.25,0.62);s.lineTo(1.75,0.82);s.lineTo(0.95,0.92);s.lineTo(0.5,1.32);s.lineTo(-0.7,1.36);s.lineTo(-1.5,1.0);s.lineTo(-2.2,0.9);s.lineTo(-2.2,0.3);
+var bg=new THREE.ExtrudeGeometry(s,{depth:1.7,bevelEnabled:true,bevelThickness:0.06,bevelSize:0.06,bevelSegments:3});
+bg.translate(0,0,-0.85);
+var bodyMat=mat(0x0653b6,0.22);car.add(new THREE.Mesh(bg,bodyMat));
+var gs=new THREE.Shape();
+gs.moveTo(0.9,0.95);gs.lineTo(0.5,1.3);gs.lineTo(-0.7,1.34);gs.lineTo(-1.4,1.02);gs.lineTo(0.9,0.95);
+var gg=new THREE.ExtrudeGeometry(gs,{depth:1.86,bevelEnabled:false});gg.translate(0,0,-0.93);
+var glassMat=mat(0x0b1220,0.35);car.add(new THREE.Mesh(gg,glassMat));
+var wheels=[];
+[[1.3,0.92],[1.3,-0.92],[-1.35,0.92],[-1.35,-0.92]].forEach(function(p){
+var g=new THREE.Group();
+var t=new THREE.Mesh(new THREE.CylinderGeometry(0.36,0.36,0.26,32),mat(0x1f2937));
+var r=new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.22,0.28,6),mat(0xcbd5e1));
+t.rotation.x=r.rotation.x=Math.PI/2;g.add(t);g.add(r);g.position.set(p[0],0.36,p[1]);car.add(g);wheels.push(g);});
+function box(w,h,d,c,x,y,z){var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat(c));m.position.set(x,y,z);car.add(m);return m;}
+box(1.7,0.2,1.2,0x1d9e75,0.9,0.45,0);
+box(0.5,0.3,0.7,0x888780,-1.45,0.5,0);
+box(0.4,0.25,0.5,0xef9f27,-0.7,0.8,0);
+box(0.5,0.26,1.0,0x7f77dd,-1.97,0.8,0);
+var tl=new THREE.MeshBasicMaterial({color:0x5a1111});
+[0.6,-0.6].forEach(function(z){var m=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.1,0.3),tl);m.position.set(-2.3,0.72,z);car.add(m);
+var h=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.1,0.3),new THREE.MeshBasicMaterial({color:0xfff6c8}));h.position.set(2.3,0.62,z);car.add(h);});
+var chr=new THREE.MeshStandardMaterial({color:0xd1d5db,metalness:0.8,roughness:0.3});
+[0.15,-0.15].forEach(function(z){var c=new THREE.Mesh(new THREE.BoxGeometry(0.05,0.2,0.25),chr);c.position.set(2.27,0.48,z);car.add(c);var g=new THREE.Mesh(new THREE.BoxGeometry(0.06,0.15,0.2),new THREE.MeshStandardMaterial({color:0x0a0a0a}));g.position.set(2.29,0.48,z);car.add(g);});
+var ae=new THREE.MeshBasicMaterial({color:0xffffff});
+[0.62,-0.62].forEach(function(z){var r=new THREE.Mesh(new THREE.TorusGeometry(0.07,0.012,8,24),ae);r.rotation.y=Math.PI/2;r.position.set(2.31,0.62,z);car.add(r);});
+function V(x,y,z){return new THREE.Vector3(x,y,z);}
+var segs=[[V(0.05,0.45,0),V(-0.7,0.5,0)],[V(-0.7,0.5,0),V(-1.2,0.5,0)],[V(-0.7,0.5,0),V(-0.7,0.675,0)],[V(-0.9,0.8,0),V(-1.72,0.8,0)]];
+segs.forEach(function(sg){car.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(sg),new THREE.LineBasicMaterial({color:0x9ca3af})));});
+var N=5,parts=[],pm=[];
+for(var i=0;i<4;i++){var m=new THREE.MeshBasicMaterial({color:0xffffff});pm.push(m);var arr=[];
+for(var k=0;k<N;k++){var q=new THREE.Mesh(new THREE.SphereGeometry(0.05,10,10),m);car.add(q);arr.push(q);}parts.push(arr);}
+var road=new THREE.Mesh(new THREE.PlaneGeometry(60,6),new THREE.MeshStandardMaterial({color:0x3b4048,roughness:1}));
+road.rotation.x=-Math.PI/2;road.position.y=-0.005;scene.add(road);
+var dashes=[],posts=[];
+var dm=new THREE.MeshBasicMaterial({color:0xe5e7eb}),pmat=new THREE.MeshStandardMaterial({color:0x9ca3af});
+for(var i=0;i<20;i++)[1.6,-1.6].forEach(function(z){var d=new THREE.Mesh(new THREE.BoxGeometry(1.4,0.01,0.12),dm);d.position.set(-30+i*3,0.002,z);scene.add(d);dashes.push(d);});
+for(var i=0;i<10;i++)[3.5,-3.5].forEach(function(z){var p=new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,1.2,8),pmat);p.position.set(-30+i*6,0.6,z);scene.add(p);posts.push(p);});
+var OCV=360,R=0.1,CAP=67,C=16;
+function bi(P){return (OCV-Math.sqrt(OCV*OCV-4*R*P))/(2*R);}
+var st,hyb=true,lim=33.5,pa=0,pbk=0,ka=0,kb=0;
+function reset(){st={v:0,a:0,b:0,sc:225,soc:80,rec:0,avail:0,fr:0,brk:0,spin:0};}
+reset();
+var ac=null,mo,mo2,mg,snd=true,tickT=0;
+function audio(){if(!snd)return;try{if(!ac){ac=new (window.AudioContext||window.webkitAudioContext)();var f=ac.createBiquadFilter();f.type='lowpass';f.frequency.value=1200;mg=ac.createGain();mg.gain.value=0;mo=ac.createOscillator();mo.type='sawtooth';mo2=ac.createOscillator();mo2.type='sine';mo.connect(f);mo2.connect(f);f.connect(mg);mg.connect(ac.destination);mo.start();mo2.start();}if(ac.state==='suspended')ac.resume();}catch(e){ac=null;}}
+function tap(fr,du,vo){if(!ac||!snd)return;var t=ac.currentTime,o=ac.createOscillator(),g=ac.createGain();o.type='triangle';o.frequency.setValueAtTime(fr,t);o.frequency.exponentialRampToValueAtTime(fr*0.5,t+du);g.gain.setValueAtTime(vo,t);g.gain.exponentialRampToValueAtTime(0.0001,t+du);o.connect(g);g.connect(ac.destination);o.start(t);o.stop(t+du+0.02);}
+function frame(now){
+var dt=Math.min((now-frame.p)/1000||0,0.05);frame.p=now;
+st.a+=(((pa||ka)?1:0)-st.a)*Math.min(dt*5,1);
+st.b+=(((pbk||kb)?1:0)-st.b)*Math.min(dt*8,1);
+var v=st.v,Fres=v>0.05?0.5*1.2*0.28*2.2*v*v+0.01*1500*9.81:0;
+var Ftr=0,Pbus=0,Fbrk=0,Pdes=0,Pacc=0,Ffr=0,Psc=0,Pbat=0,accSC=0,accB=0;
+if(st.b>0.03&&v>0.05){
+Fbrk=st.b*4000;var fade=Math.min(1,v/3);
+Pdes=Math.min(0.7*Fbrk*v*fade*0.9,60000);var rem=Pdes;
+if(hyb){var head=0.5*C*(300*300-st.sc*st.sc)/dt/0.97;accSC=Math.max(0,Math.min(rem,60000,head));rem-=accSC;}
+accB=Math.min(rem,(OCV+R*lim)*lim);Pacc=accSC+accB;
+Ffr=Fbrk-Pacc/0.9/v;Psc=-accSC;Pbat=-accB;
+st.rec+=Pacc*dt/3600;st.avail+=Pdes*dt/3600;st.fr=Fbrk>0?Ffr/Fbrk:0;
+}else if(st.a>0.03){
+var kb2=hyb?Math.max(0,Math.min(1,(st.sc-150)/30)):0;Ftr=st.a*Math.min(3500+1500*kb2,(35000+20000*kb2)/Math.max(v,1));Pbus=Ftr*v/0.9;
+if(hyb){var av=0.5*C*(st.sc*st.sc-150*150)/dt*0.97;Psc=Math.max(0,Math.min(Math.max(Pbus-8000,0),av,60000));}
+Pbat=Pbus-Psc;
+}
+var brkOn=st.b>0.03&&v>0.05,bal=0;
+if(hyb&&!brkOn&&Psc===0&&Pbus<8000){var er=225-st.sc;if(Math.abs(er)>1){var pw=Math.min(5000,Math.abs(er)*200);if(er>0){var hd=0.5*C*(300*300-st.sc*st.sc)/dt/0.97;bal=-Math.min(pw,hd);}else if(st.a<=0.03){bal=pw;}Psc+=bal;Pbat-=bal;}}
+st.bal=bal;
+if(Psc!==0){var dE=Psc>0?-Psc/0.97*dt:-Psc*0.97*dt;st.sc=Math.min(300,Math.max(150,Math.sqrt(Math.max(st.sc*st.sc+2*dE/C,1))));}
+var I=bi(Pbat);st.soc-=I*dt/3600/CAP*100;
+st.v=Math.max(0,v+(Ftr-Fbrk-Fres)/1500*dt);if(st.v<0.05&&Ftr===0)st.v=0;
+var dx=st.v*dt;
+dashes.forEach(function(d){d.position.x-=dx;if(d.position.x<-30)d.position.x+=60;});
+posts.forEach(function(p){p.position.x-=dx;if(p.position.x<-30)p.position.x+=60;});
+wheels.forEach(function(w){w.rotation.z-=st.v/0.36*dt;});
+car.rotation.z=0.02*st.a-0.04*st.b;
+tl.color.setHex(st.b>0.1?0xff2d2d:0x5a1111);
+var fl=[Pbat,Pbus>0?Pbus:-Pacc,Psc,Psc];
+var D=[0,0,0,0],Cc=[0,0,0,0];
+D[0]=Pbat>200?1:Pbat<-200?-1:0;Cc[0]=Pbat>0?0x1d9e75:0xef9f27;
+var pm2=Pbus>200?Pbus:-Pacc;D[1]=pm2>200?1:pm2<-200?-1:0;Cc[1]=pm2>0?0xfacc15:0xef9f27;
+D[2]=Psc>200?-1:Psc<-200?1:0;Cc[2]=Psc>0?0x7f77dd:(brkOn?0xef9f27:0x1d9e75);
+D[3]=D[2];Cc[3]=Cc[2];
+st.t=(st.t||0)+dt;
+for(var i=0;i<4;i++){pm[i].color.setHex(Cc[i]);var a=segs[i][0],b=segs[i][1];
+for(var k=0;k<N;k++){var q=parts[i][k];if(D[i]===0){q.visible=false;continue;}q.visible=true;
+var t=(st.t*0.8+k/N)%1;if(D[i]<0)t=1-t;q.position.lerpVectors(a,b,t);}}
+if(ac&&snd){var tm=ac.currentTime,f0=60+st.v*9,gn=Math.min(0.09,st.v*0.0012+st.a*0.04+(Pacc>200?0.03:0));
+mo.frequency.setTargetAtTime(f0,tm,0.05);mo2.frequency.setTargetAtTime(f0*2+(Pacc>200?120:0),tm,0.05);mg.gain.setTargetAtTime(gn,tm,0.08);
+if(Pacc>200){tickT-=dt;if(tickT<=0){tap(1400,0.03,0.08);tickT=0.45-0.33*Math.min(Pacc/30000,1);}}else tickT=0;}
+else if(ac&&mg)mg.gain.setTargetAtTime(0,ac.currentTime,0.05);
+if(auto)th+=dt*0.15;
+cam();renderer.render(scene,camera);
+if(!frame.u||now-frame.u>80){frame.u=now;ui(Pbus,Pacc,I);}
+requestAnimationFrame(frame);}
+function setT(i,t){var e=$(i);if(e.textContent!==t)e.textContent=t;}
+function ui(Pbus,Pacc,I){
+setT('tv',(st.v*3.6).toFixed(0)+' km/h');
+setT('tp',(Pacc>0?'-'+(Pacc/1000).toFixed(1)+' regen':(Pbus/1000).toFixed(1)+' drive').replace('-','\u2212')+' kW');
+setT('ts',st.sc.toFixed(0)+' V');
+setT('ti',(I>=0?'':'\u2212')+Math.abs(I).toFixed(0)+' A'+(I<0?' charge':''));
+setT('tc',st.soc.toFixed(2)+' %');
+setT('tr',st.rec.toFixed(1)+' Wh');
+setT('tk',st.avail>0.01?(st.rec/st.avail*100).toFixed(0)+' %':'\u2013');
+setT('tf',st.b>0.03&&st.v>0.05?(Math.max(0,st.fr)*100).toFixed(0)+' %':'\u2013');
+$('pa').style.setProperty('--p',(st.a*100).toFixed(0)+'%');
+$('pb').style.setProperty('--p',(st.b*100).toFixed(0)+'%');
+var m='Stationary. Hold Accelerate to drive.';
+if(st.b>0.03&&st.v>0.05)m=Pacc>200?(hyb?'Regen braking: energy goes to the supercapacitor first, battery takes any excess.':'Regen braking: energy goes to the battery, limited by its charge current.')+' The rest is friction braking.':'Braking with friction brakes only.';
+else if(st.a>0.03)m=hyb&&st.sc>152?'Accelerating: supercapacitor boost adds extra power, so the car goes faster. Battery supplies the rest.':'Accelerating with battery power only: no boost.';
+else if(st.v>0.05)m='Coasting.';
+if(st.bal&&!(st.b>0.03&&st.v>0.05)&&!(st.a>0.03))m=st.bal<0?'Battery is recharging the supercapacitor back to 225 V.':'Supercapacitor is returning extra energy to the battery, back to 225 V.';
+setT('msg',m);}
+var th=0.9,ph=1.25,rad=7.5,auto=true,ptr={};
+function cam(){camera.position.set(rad*Math.sin(ph)*Math.cos(th),0.6+rad*Math.cos(ph),rad*Math.sin(ph)*Math.sin(th));camera.lookAt(0,0.6,0);}
+var cv=renderer.domElement;
+cv.addEventListener('pointerdown',function(e){cv.setPointerCapture(e.pointerId);ptr[e.pointerId]={x:e.clientX,y:e.clientY};auto=false;});
+cv.addEventListener('pointermove',function(e){var p=ptr[e.pointerId];if(!p)return;var ids=Object.keys(ptr);
+if(ids.length===1){th-=(e.clientX-p.x)*0.01;ph=Math.max(0.3,Math.min(1.5,ph-(e.clientY-p.y)*0.01));}
+else if(ids.length===2){var o=ptr[ids[0]==e.pointerId?ids[1]:ids[0]];var d0=Math.hypot(p.x-o.x,p.y-o.y),d1=Math.hypot(e.clientX-o.x,e.clientY-o.y);rad=Math.max(4,Math.min(12,rad*d0/Math.max(d1,1)));}
+p.x=e.clientX;p.y=e.clientY;});
+function up(e){delete ptr[e.pointerId];}
+cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+cv.addEventListener('wheel',function(e){e.preventDefault();rad=Math.max(4,Math.min(12,rad+e.deltaY*0.005));auto=false;},{passive:false});
+function hold(id,set){var b=$(id);b.addEventListener('pointerdown',function(e){e.preventDefault();b.setPointerCapture(e.pointerId);audio();tap(180,0.08,0.3);set(1);});
+['pointerup','pointercancel','lostpointercapture'].forEach(function(n){b.addEventListener(n,function(){set(0);});});
+b.addEventListener('contextmenu',function(e){e.preventDefault();});}
+hold('pa',function(x){pa=x;});hold('pb',function(x){pbk=x;});
+function key(e,d){var k=e.key;if(k==='ArrowUp'||k==='w'||k==='W'){ka=d;e.preventDefault();}
+else if(k==='ArrowDown'||k==='s'||k==='S'||k===' '){kb=d;e.preventDefault();}}
+window.addEventListener('keydown',function(e){if(!e.repeat&&['ArrowUp','ArrowDown','w','W','s','S',' '].indexOf(e.key)>=0){audio();tap(180,0.08,0.3);}key(e,1);});window.addEventListener('keyup',function(e){key(e,0);});
+document.querySelectorAll('[data-store]').forEach(function(b){b.addEventListener('click',function(){hyb=b.dataset.store==='hyb';
+document.querySelectorAll('[data-store]').forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false');});});});
+document.querySelectorAll('[data-lim]').forEach(function(b){b.addEventListener('click',function(){lim=parseFloat(b.dataset.lim);
+document.querySelectorAll('[data-lim]').forEach(function(x){x.setAttribute('aria-pressed',x===b?'true':'false');});});});
+var xr=$('xr');xr.addEventListener('click',function(){var on=xr.getAttribute('aria-pressed')!=='true';xr.setAttribute('aria-pressed',on?'true':'false');bodyMat.opacity=on?0.22:1;glassMat.opacity=on?0.35:0.85;});
+$('sd').addEventListener('click',function(){snd=!snd;this.setAttribute('aria-pressed',snd?'true':'false');if(snd)audio();});
+$('rs').addEventListener('click',reset);
+function size(){var w=el.clientWidth,h=el.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
+if(window.ResizeObserver){new ResizeObserver(size).observe(el);}window.addEventListener('resize',size);size();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
